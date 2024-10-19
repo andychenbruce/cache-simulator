@@ -1,51 +1,111 @@
 fn main() {
-    let mut cache = Cache::new(4, 8, 8);
+    let mut cache: Cache<4, 1, 8, 8> = Cache::new();
 
     for addr in [29, 26, 45, 61, 29, 58, 232, 125, 29, 61] {
-        cache.access(addr);
+        cache.access(Addr(addr));
+    }
+
+    for (entry, bucket) in cache.state.iter().enumerate() {
+        if let Some(val) = bucket {
+            println!("entry {}: {}", entry, val.last_accessed_by.0);
+        } else {
+            println!("entry {}: INVALID", entry);
+        }
     }
 }
 
-struct Cache {
-    index_bits: u64,
-    addr_bits: u64,
-    offset_bits: u64,
-    state: Vec<Option<u64>>,
+#[derive(Copy, Clone)]
+struct Bucket<
+    const NUM_ENTRIES: u64,
+    const ASSOCIATIVITY: u64,
+    const ENTRY_SIZE: u64,
+    const ADDR_BITS: u32,
+> {
+    tag: u64,
+    last_accessed_by: Addr<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>,
 }
 
-impl Cache {
-    fn new(num_entries: u64, entry_size_bytes: u64, addr_bits: u64) -> Self {
+#[derive(Copy, Clone)]
+struct Addr<
+    const NUM_ENTRIES: u64,
+    const ASSOCIATIVITY: u64,
+    const ENTRY_SIZE: u64,
+    const ADDR_BITS: u32,
+>(u64);
+
+struct Cache<
+    const NUM_ENTRIES: u64,
+    const ASSOCIATIVITY: u64,
+    const ENTRY_SIZE: u64,
+    const ADDR_BITS: u32,
+> {
+    state: Vec<Option<Bucket<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>>>,
+}
+
+impl<
+        const NUM_ENTRIES: u64,
+        const ASSOCIATIVITY: u64,
+        const ENTRY_SIZE: u64,
+        const ADDR_BITS: u32,
+    > Addr<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>
+{
+    const OFFSET_BITS: u32 = get_log_2(ENTRY_SIZE);
+    const INDEX_BITS: u32 = get_log_2(NUM_ENTRIES / ASSOCIATIVITY);
+    const TAG_BITS: u32 = ADDR_BITS - Self::OFFSET_BITS - Self::INDEX_BITS;
+
+    const OFFSET_MASK: u64 = (1 << Self::OFFSET_BITS) - 1;
+
+    const INDEX_MASK: u64 = ((1 << (Self::INDEX_BITS + Self::OFFSET_BITS)) - 1) ^ Self::OFFSET_MASK;
+    const TAG_MASK: u64 = ((1 << (Self::TAG_BITS + Self::INDEX_BITS + Self::OFFSET_BITS)) - 1)
+        ^ Self::INDEX_MASK
+        ^ Self::OFFSET_MASK;
+
+    fn offset(&self) -> u64 {
+        self.0 & Self::OFFSET_MASK
+    }
+
+    fn index(&self) -> u64 {
+        (self.0 & Self::INDEX_MASK) >> Self::OFFSET_BITS
+    }
+
+    fn tag(&self) -> u64 {
+        (self.0 & Self::TAG_MASK) >> (Self::OFFSET_BITS + Self::INDEX_BITS)
+    }
+}
+
+impl<
+        const NUM_ENTRIES: u64,
+        const ASSOCIATIVITY: u64,
+        const ENTRY_SIZE: u64,
+        const ADDR_BITS: u32,
+    > Cache<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>
+{
+    const OFFSET_BITS: u32 = get_log_2(ENTRY_SIZE);
+    const INDEX_BITS: u32 = get_log_2(NUM_ENTRIES / ASSOCIATIVITY);
+    const TAG_BITS: u32 = ADDR_BITS - Self::OFFSET_BITS - Self::INDEX_BITS;
+
+    fn new() -> Self {
         Cache {
-            index_bits: get_log_2(num_entries),
-            addr_bits,
-            offset_bits: get_log_2(entry_size_bytes),
-            state: vec![None; usize::try_from(num_entries).unwrap()],
+            state: vec![None; usize::try_from(NUM_ENTRIES).unwrap()],
         }
     }
 
-    fn access(&mut self, addr: u64) {
-        assert!(get_largest_bit_pos(addr) <= self.addr_bits);
+    fn access(&mut self, addr: Addr<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>) {
+        assert!(get_largest_bit_pos(addr.0) <= ADDR_BITS);
 
-        let tag_bits = self.addr_bits - self.index_bits - self.offset_bits;
+        let offset = addr.offset();
+        let index = addr.index();
+        let tag = addr.tag();
 
-        let offset_mask: u64 = (1 << self.offset_bits) - 1;
-        let index_mask: u64 = ((1 << (self.index_bits + self.offset_bits)) - 1) ^ offset_mask;
-        let tag_mask: u64 =
-            ((1 << (tag_bits + self.index_bits + self.offset_bits)) - 1) ^ index_mask ^ offset_mask;
-
-        let offset = addr & offset_mask;
-        let index = (addr & index_mask) >> self.offset_bits;
-        let tag = (addr & tag_mask) >> (self.offset_bits + self.index_bits);
-
-        assert!(get_largest_bit_pos(offset) <= self.offset_bits);
-        assert!(get_largest_bit_pos(index) <= self.index_bits);
-        assert!(get_largest_bit_pos(tag) <= tag_bits);
+        assert!(get_largest_bit_pos(offset) <= Self::OFFSET_BITS);
+        assert!(get_largest_bit_pos(index) <= Self::INDEX_BITS);
+        assert!(get_largest_bit_pos(tag) <= Self::TAG_BITS);
 
         print!("addr = ");
-        let string = format!("{:010b}", addr);
+        let string = format!("{:010b}", addr.0);
         for (pos, c) in string.chars().enumerate() {
-            let i: u64 = (10 - pos - 1).try_into().unwrap();
-            if (i == self.offset_bits) || (i == self.offset_bits + self.index_bits) {
+            let i: u32 = (10 - pos - 1).try_into().unwrap();
+            if (i == Self::OFFSET_BITS) || (i == Self::OFFSET_BITS + Self::INDEX_BITS) {
                 print!("{}|", c);
             } else {
                 print!("{}", c);
@@ -56,24 +116,39 @@ impl Cache {
 
         let index: usize = index.try_into().unwrap();
         if let Some(entry_tag) = self.state[index] {
-            if entry_tag == tag {
+            if entry_tag.tag == tag {
                 println!("hit");
             } else {
                 println!("miss, wrong tag");
-                self.state[index] = Some(tag);
+                self.state[index] = Some(Bucket {
+                    tag,
+                    last_accessed_by: addr,
+                });
             }
         } else {
             println!("miss, invaid");
-            self.state[index] = Some(tag);
+            self.state[index] = Some(Bucket {
+                tag,
+                last_accessed_by: addr,
+            });
         }
     }
 }
 
-fn get_log_2(x: u64) -> u64 {
-    assert!(x.count_ones() == 1);
-    x.ilog2().into()
+impl<
+        const NUM_ENTRIES: u64,
+        const ASSOCIATIVITY: u64,
+        const ENTRY_SIZE: u64,
+        const ADDR_BITS: u32,
+    > Addr<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>
+{
 }
 
-fn get_largest_bit_pos(x: u64) -> u64 {
-    (u64::BITS - x.leading_zeros()).into()
+const fn get_log_2(x: u64) -> u32 {
+    assert!(x.count_ones() == 1);
+    x.ilog2()
+}
+
+fn get_largest_bit_pos(x: u64) -> u32 {
+    u64::BITS - x.leading_zeros()
 }
