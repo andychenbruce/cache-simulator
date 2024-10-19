@@ -5,52 +5,131 @@ fn main() {
         cache.access(Addr(addr));
     }
 
-    for (entry, bucket) in cache.state.iter().enumerate() {
-        if let Some(val) = bucket {
-            println!("entry {}: {}", entry, val.last_accessed_by.0);
-        } else {
-            println!("entry {}: INVALID", entry);
+    for (bucket_num, bucket) in cache.state.iter().enumerate() {
+        println!("bucket {} ======================", bucket_num);
+        for entry in bucket.entries.iter() {
+            if let Some(entry) = entry {
+                println!("entry: {}", entry.last_accessed_by.0);
+            } else {
+                println!("entry: INVALID");
+            }
         }
+        println!();
     }
 }
 
 #[derive(Copy, Clone)]
 struct Bucket<
     const NUM_ENTRIES: u64,
-    const ASSOCIATIVITY: u64,
+    const ASSOCIATIVITY: usize,
     const ENTRY_SIZE: u64,
     const ADDR_BITS: u32,
 > {
+    entries: [Option<Entry<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>>; ASSOCIATIVITY],
+}
+
+#[derive(Copy, Clone)]
+struct Entry<
+    const NUM_ENTRIES: u64,
+    const ASSOCIATIVITY: usize,
+    const ENTRY_SIZE: u64,
+    const ADDR_BITS: u32,
+> {
+    time_since_last_hit: u32,
     tag: u64,
     last_accessed_by: Addr<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>,
+}
+
+impl<
+        const NUM_ENTRIES: u64,
+        const ASSOCIATIVITY: usize,
+        const ENTRY_SIZE: u64,
+        const ADDR_BITS: u32,
+    > Bucket<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>
+{
+    fn new() -> Self {
+        Self {
+            entries: [None; ASSOCIATIVITY],
+        }
+    }
+    fn access(
+        &mut self,
+        addr: Addr<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>,
+    ) -> AccessResult {
+        let tag = addr.tag();
+
+        for entry in self.entries.iter_mut().flatten() {
+            entry.time_since_last_hit += 1;
+        }
+
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .filter_map(|x| x.as_mut())
+            .find(|entry| entry.tag == tag)
+        {
+            entry.time_since_last_hit = 0;
+            return AccessResult::Hit;
+        }
+        if let Some(first_empty) = self.entries.iter_mut().find(|x| x.is_none()) {
+            *first_empty = Some(Entry {
+                time_since_last_hit: 0,
+                tag,
+                last_accessed_by: addr,
+            });
+
+            AccessResult::MissInvalid
+        } else {
+            let lru = self
+                .entries
+                .iter_mut()
+                .filter_map(|x| x.as_mut())
+                .max_by_key(|x| x.time_since_last_hit)
+                .unwrap();
+
+            *lru = Entry {
+                time_since_last_hit: 0,
+                tag,
+                last_accessed_by: addr,
+            };
+
+            AccessResult::MissWrongTag
+        }
+    }
+}
+
+enum AccessResult {
+    Hit,
+    MissWrongTag,
+    MissInvalid,
 }
 
 #[derive(Copy, Clone)]
 struct Addr<
     const NUM_ENTRIES: u64,
-    const ASSOCIATIVITY: u64,
+    const ASSOCIATIVITY: usize,
     const ENTRY_SIZE: u64,
     const ADDR_BITS: u32,
 >(u64);
 
 struct Cache<
     const NUM_ENTRIES: u64,
-    const ASSOCIATIVITY: u64,
+    const ASSOCIATIVITY: usize,
     const ENTRY_SIZE: u64,
     const ADDR_BITS: u32,
 > {
-    state: Vec<Option<Bucket<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>>>,
+    state: Vec<Bucket<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>>,
 }
 
 impl<
         const NUM_ENTRIES: u64,
-        const ASSOCIATIVITY: u64,
+        const ASSOCIATIVITY: usize,
         const ENTRY_SIZE: u64,
         const ADDR_BITS: u32,
     > Addr<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>
 {
     const OFFSET_BITS: u32 = get_log_2(ENTRY_SIZE);
-    const INDEX_BITS: u32 = get_log_2(NUM_ENTRIES / ASSOCIATIVITY);
+    const INDEX_BITS: u32 = get_log_2(NUM_ENTRIES / (ASSOCIATIVITY as u64));
     const TAG_BITS: u32 = ADDR_BITS - Self::OFFSET_BITS - Self::INDEX_BITS;
 
     const OFFSET_MASK: u64 = (1 << Self::OFFSET_BITS) - 1;
@@ -71,22 +150,36 @@ impl<
     fn tag(&self) -> u64 {
         (self.0 & Self::TAG_MASK) >> (Self::OFFSET_BITS + Self::INDEX_BITS)
     }
+
+    fn print_str(&self) -> String {
+        let mut output = "".to_string();
+
+        let bits = (0..ADDR_BITS).map(|bit_pos| (self.0 & (1 << bit_pos) != 0));
+
+        for (pos, bit) in bits.enumerate().rev() {
+            let c = if bit { '1' } else { '0' };
+            let pos: u32 = pos.try_into().unwrap();
+            if (pos == Self::OFFSET_BITS) || (pos == Self::OFFSET_BITS + Self::INDEX_BITS) {
+                output += &format!("{}|", c);
+            } else {
+                output += &format!("{}", c);
+            }
+        }
+
+        output
+    }
 }
 
 impl<
         const NUM_ENTRIES: u64,
-        const ASSOCIATIVITY: u64,
+        const ASSOCIATIVITY: usize,
         const ENTRY_SIZE: u64,
         const ADDR_BITS: u32,
     > Cache<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>
 {
-    const OFFSET_BITS: u32 = get_log_2(ENTRY_SIZE);
-    const INDEX_BITS: u32 = get_log_2(NUM_ENTRIES / ASSOCIATIVITY);
-    const TAG_BITS: u32 = ADDR_BITS - Self::OFFSET_BITS - Self::INDEX_BITS;
-
     fn new() -> Self {
         Cache {
-            state: vec![None; usize::try_from(NUM_ENTRIES).unwrap()],
+            state: vec![Bucket::new(); usize::try_from(NUM_ENTRIES).unwrap()],
         }
     }
 
@@ -97,47 +190,22 @@ impl<
         let index = addr.index();
         let tag = addr.tag();
 
-        assert!(get_largest_bit_pos(offset) <= Self::OFFSET_BITS);
-        assert!(get_largest_bit_pos(index) <= Self::INDEX_BITS);
-        assert!(get_largest_bit_pos(tag) <= Self::TAG_BITS);
-
-        print!("addr = ");
-        let string = format!("{:010b}", addr.0);
-        for (pos, c) in string.chars().enumerate() {
-            let i: u32 = (10 - pos - 1).try_into().unwrap();
-            if (i == Self::OFFSET_BITS) || (i == Self::OFFSET_BITS + Self::INDEX_BITS) {
-                print!("{}|", c);
-            } else {
-                print!("{}", c);
-            }
-        }
-        println!();
+        println!("addr = {}", addr.print_str());
         println!("tag = {}, index = {}, offset = {}", tag, index, offset);
 
         let index: usize = index.try_into().unwrap();
-        if let Some(entry_tag) = self.state[index] {
-            if entry_tag.tag == tag {
-                println!("hit");
-            } else {
-                println!("miss, wrong tag");
-                self.state[index] = Some(Bucket {
-                    tag,
-                    last_accessed_by: addr,
-                });
-            }
-        } else {
-            println!("miss, invaid");
-            self.state[index] = Some(Bucket {
-                tag,
-                last_accessed_by: addr,
-            });
+        let access_state = self.state[index].access(addr);
+        match access_state {
+            AccessResult::Hit => println!("HIT"),
+            AccessResult::MissWrongTag => println!("MISS: wrong tag"),
+            AccessResult::MissInvalid => println!("MISS: invalid"),
         }
     }
 }
 
 impl<
         const NUM_ENTRIES: u64,
-        const ASSOCIATIVITY: u64,
+        const ASSOCIATIVITY: usize,
         const ENTRY_SIZE: u64,
         const ADDR_BITS: u32,
     > Addr<NUM_ENTRIES, ASSOCIATIVITY, ENTRY_SIZE, ADDR_BITS>
