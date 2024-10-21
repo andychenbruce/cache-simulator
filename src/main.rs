@@ -1,10 +1,11 @@
 fn main() {
-    let mut cache: Cache<4, 1, 8, 8> = Cache::new();
+    let mut cache: Cache<4, 2, 8, 8> = Cache::new();
 
     for addr in [29, 26, 45, 61, 29, 58, 232, 125, 29, 61] {
         cache.access(Addr(addr));
     }
 
+    println!("FINAL STATE:");
     for (bucket_num, bucket) in cache.state.iter().enumerate() {
         println!("bucket {} ======================", bucket_num);
         for entry in bucket.entries.iter() {
@@ -179,7 +180,7 @@ impl<
 {
     fn new() -> Self {
         Cache {
-            state: vec![Bucket::new(); usize::try_from(NUM_ENTRIES).unwrap()],
+            state: vec![Bucket::new(); usize::try_from(NUM_ENTRIES).unwrap() / ASSOCIATIVITY],
         }
     }
 
